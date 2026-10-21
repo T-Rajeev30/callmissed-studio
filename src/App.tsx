@@ -1,70 +1,310 @@
-import { useEffect, useRef, useState } from 'react';
-import { Room, RoomEvent, Track } from 'livekit-client';
-import { AudioLines, ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp, Image, KeyRound, LoaderCircle, MessageCircle, Mic, MoreHorizontal, Plus, Sparkles, Square, Volume2, X } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { MotionConfig, motion } from 'framer-motion';
+import {
+  AudioLines,
+  Check,
+  ChevronRight,
+  Images,
+  KeyRound,
+  Menu,
+  MessageCircle,
+  Moon,
+  Sun,
+  X,
+} from 'lucide-react';
+import { Toaster } from 'sonner';
+import { useApiStatus } from './hooks/useApiStatus';
+import { useTheme } from './hooks/useTheme';
 
-type Message = { role: 'user' | 'assistant'; content: string };
-const examples = ['A quiet morning in the mountains', 'A retro travel poster for Bengaluru', 'A tiny house hidden in a greenhouse'];
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const ImagePage = lazy(() => import('./pages/ImagePage'));
+const VoicePage = lazy(() => import('./pages/VoicePage'));
+
+type PageId = 'chat' | 'images' | 'voice';
+const pages = [
+  { id: 'chat' as const, label: 'Chat', icon: MessageCircle, title: 'New conversation' },
+  { id: 'images' as const, label: 'Images', icon: Images, title: 'Image studio' },
+  { id: 'voice' as const, label: 'Voice', icon: AudioLines, title: 'Voice agent' },
+];
 
 export default function App() {
-  const [page, setPage] = useState<'chat'|'images'|'voice'>('chat');
-  const [key, setKey] = useState(false);
-  const [keyOpen, setKeyOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([{role:'assistant',content:'Hey there. I’m your creative sidekick. What are we making today?'}]);
-  const [prompt, setPrompt] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [model, setModel] = useState('kimi-k2.5');
-  const [imagePrompt, setImagePrompt] = useState('');
-  const [image, setImage] = useState('');
-  const [imageCount, setImageCount] = useState(0);
-  const [voiceStatus, setVoiceStatus] = useState<'idle'|'connecting'|'live'>('idle');
-  const [transcript, setTranscript] = useState<Message[]>([]);
-  const roomRef = useRef<Room|null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const imageInput = useRef<HTMLInputElement>(null);
-  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:'smooth'}); },[messages,transcript]);
-  useEffect(()=>{ fetch('/api/status').then(r=>r.json()).then(data=>setKey(Boolean(data.configured))).catch(()=>setKey(false)); },[]);
-  const headers = () => ({'Content-Type':'application/json'});
-  const explainError = async (res: Response) => { let msg=`Request failed (${res.status})`; try { const body=await res.json(); msg=body?.error?.message || body?.detail?.[0]?.msg || msg; } catch {} return msg; };
-  async function sendChat(text=prompt) {
-    const value=text.trim(); if(!value || busy) return; if(!key){setNotice('The app owner needs to configure the CallMissed API key on the server.');setKeyOpen(true);return;}
-    const next=[...messages,{role:'user' as const,content:value}]; setMessages(next); setPrompt(''); setBusy(true);
-    try { const res=await fetch('/api/chat',{method:'POST',headers:headers(),body:JSON.stringify({model,messages:next,max_tokens:700})}); if(!res.ok) throw new Error(await explainError(res)); const data=await res.json(); const answer=data.choices?.[0]?.message?.content; if(!answer) throw new Error('The API returned an empty reply.'); setMessages([...next,{role:'assistant',content:answer}]); }
-    catch(e){setMessages([...next,{role:'assistant',content:`I couldn’t reach the model: ${e instanceof Error?e.message:'Unknown error'}. Check your API key and try again.`}]);} finally {setBusy(false);}
+  const [page, setPage] = useState<PageId>('chat');
+  const [visited, setVisited] = useState<Record<PageId, boolean>>({
+    chat: true,
+    images: false,
+    voice: false,
+  });
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const setupDialogRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const configured = useApiStatus();
+  const { theme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setSetupOpen(false);
+        setDrawerOpen(false);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPage('chat');
+        setDrawerOpen(false);
+        setSetupOpen(false);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!setupOpen) return;
+    const dialog = setupDialogRef.current;
+    const firstControl = dialog?.querySelector<HTMLElement>(
+      'button, a[href], input, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    firstControl?.focus();
+    return () => returnFocusRef.current?.focus();
+  }, [setupOpen]);
+
+  function openSetup() {
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSetupOpen(true);
   }
-  async function generateImage(text=imagePrompt) {
-    const value=text.trim(); if(!value || busy) return; if(!key){setNotice('The app owner needs to configure the CallMissed API key on the server.');setKeyOpen(true);return;}
-    setBusy(true); setImage('');
-    try { const res=await fetch('/api/images',{method:'POST',headers:headers(),body:JSON.stringify({model:'flux-2-klein-9b',prompt:value,n:1,size:'1024x1024',response_format:'b64_json'})}); if(!res.ok) throw new Error(await explainError(res)); const data=await res.json(); const item=data.data?.[0]; const src=item?.b64_json?`data:image/png;base64,${item.b64_json}`:item?.url; if(!src) throw new Error('No image was returned.'); setImage(src);setImageCount(c=>c+1); }
-    catch(e){setNotice(`Image generation failed: ${e instanceof Error?e.message:'Unknown error'}`);} finally {setBusy(false);}
+
+  function trapDialogFocus(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Tab') return;
+    const dialog = setupDialogRef.current;
+    const controls = dialog?.querySelectorAll<HTMLElement>(
+      'button, a[href], input, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    if (!controls?.length) return;
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
   }
-  async function startVoice() {
-    if(!key){setNotice('The app owner needs to configure the CallMissed API key on the server.');setKeyOpen(true);return;} setVoiceStatus('connecting');setNotice('');
-    try { const res=await fetch('/api/voice',{method:'POST',headers:headers(),body:JSON.stringify({system_prompt:'You are a warm, concise creative assistant. Help the user brainstorm, write, and explore ideas.',voice:'shubh',language:'en-IN',llm_model:'kimi-k2.5',max_duration_seconds:180})}); if(!res.ok) throw new Error(await explainError(res)); const session=await res.json(); if(!session.ws_url||!session.token) throw new Error('Session response was missing connection details.');
-      const room=new Room();roomRef.current=room;
-      room.on(RoomEvent.TrackSubscribed,(track)=>{if(track.kind===Track.Kind.Audio){const el=track.attach();el.autoplay=true;document.body.appendChild(el);}});
-      room.on(RoomEvent.TrackUnsubscribed,(track)=>track.detach().forEach(el=>el.remove()));
-      room.on(RoomEvent.TranscriptionReceived,(segments,participant)=>{for(const seg of segments){if(seg.final&&seg.text.trim())setTranscript(t=>[...t,{role:participant?.isLocal?'user':'assistant',content:seg.text.trim()}]);}});
-      room.on(RoomEvent.Disconnected,()=>setVoiceStatus('idle'));
-      await room.connect(session.ws_url,session.token); await room.localParticipant.setMicrophoneEnabled(true);setVoiceStatus('live');
-    } catch(e){ await roomRef.current?.disconnect();roomRef.current=null;setVoiceStatus('idle');setNotice(`Couldn’t start the voice session: ${e instanceof Error?e.message:'Unknown error'}`); }
+
+  useEffect(() => {
+    const onVoiceStatus = (event: Event) => {
+      const state = (event as CustomEvent<string>).detail;
+      setVoiceActive(['connecting', 'listening', 'thinking', 'speaking'].includes(state));
+    };
+    window.addEventListener('callmissed:voice-status', onVoiceStatus);
+    return () => window.removeEventListener('callmissed:voice-status', onVoiceStatus);
+  }, []);
+
+  function navigate(next: PageId) {
+    setPage(next);
+    setVisited((current) => ({ ...current, [next]: true }));
+    setDrawerOpen(false);
   }
-  async function stopVoice(){await roomRef.current?.disconnect();roomRef.current=null;setVoiceStatus('idle');}
-  const nav=[{id:'chat' as const,label:'Chat',icon:MessageCircle},{id:'images' as const,label:'Images',icon:Image},{id:'voice' as const,label:'Voice',icon:AudioLines}];
-  return <div className="app-shell">
-    <aside className="sidebar"><a className="brand" href="#"><span className="brand-mark"><AudioLines size={19}/></span><span>callmissed<span className="brand-dot">.</span></span></a>
-      <button className="new-chat" onClick={()=>{setPage('chat');setMessages([{role:'assistant',content:'Hey there. I’m your creative sidekick. What are we making today?'}]);}}><Plus size={17}/> New conversation <span className="shortcut">⌘ K</span></button>
-      <div className="nav-label">WORKSPACE</div><nav>{nav.map(({id,label,icon:Icon})=><button key={id} className={`nav-item ${page===id?'active':''}`} onClick={()=>setPage(id)}><Icon size={17}/>{label}{id==='voice'&&voiceStatus==='live'&&<span className="live-dot"/>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="usage-card"><div className="usage-title"><Sparkles size={15}/> Your creative space</div><p>Chat, make images, or have a real conversation.</p><button onClick={()=>setKeyOpen(true)}><KeyRound size={14}/>{key?'API key connected':'API key not configured'}<span className={`key-indicator ${key?'connected':''}`}/></button></div><button className="profile"><div className="avatar">Y</div><span><b>Your workspace</b><small>Personal account</small></span><MoreHorizontal size={17}/></button></div>
-    </aside>
-    <main className="main"><header className="topbar"><div className="breadcrumbs"><span>Workspace</span><span className="slash">/</span><strong>{page==='chat'?'New conversation':page==='images'?'Image studio':'Voice agent'}</strong></div><div className="top-actions"><button className="help-button" title="About this demo"><CircleHelp size={17}/></button><button className="api-status" onClick={()=>setKeyOpen(true)}><span className={`status-dot ${key?'on':''}`}/>{key?'API connected':'Connect API'}<ChevronDown size={14}/></button></div></header>
-    {page==='chat'&&<section className="chat-layout"><div className="chat-heading"><div className="eyebrow"><span className="sparkle-dot">✳</span> YOUR AI WORKSPACE</div><h1>A little space to<br/><em>think out loud.</em></h1><p>Ask anything, chase a thought, or start with a spark.</p></div><div className="messages">{messages.map((m,i)=><div className={`message-row ${m.role}`} key={i}>{m.role==='assistant'&&<div className="assistant-avatar"><Sparkles size={15}/></div>}<div className="message-content"><div className="message-author">{m.role==='assistant'?'Studio':'You'}</div><div className="message-bubble">{m.content}</div></div>{m.role==='user'&&<div className="user-avatar">Y</div>}</div>)}{busy&&page==='chat'&&<div className="message-row"><div className="assistant-avatar"><Sparkles size={15}/></div><div className="message-content"><div className="message-author">Studio</div><div className="typing"><i/><i/><i/></div></div></div>}<div ref={bottomRef}/></div><div className="composer-wrap"><div className="composer"><textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();}}} placeholder="Ask anything…" rows={1}/><div className="composer-tools"><div className="composer-left"><button title="Attach an image" onClick={()=>imageInput.current?.click()}><Plus size={17}/></button><input ref={imageInput} type="file" accept="image/*" hidden onChange={e=>{const f=e.target.files?.[0];if(f){setPage('images');setImagePrompt(`Describe this image: ${f.name}`);}}}/><button className="model-select" onClick={()=>setModel(model==='kimi-k2.5'?'gpt-5-mini':'kimi-k2.5')}><span className="model-dot"/>{model}<ChevronDown size={13}/></button></div><button className="send-button" onClick={()=>sendChat()} disabled={!prompt.trim()||busy} aria-label="Send message"><ArrowUp size={17}/></button></div></div><div className="composer-note">AI can make mistakes. Your API key stays in this browser session.</div></div></section>}
-    {page==='images'&&<section className="tool-layout"><div className="tool-heading"><div className="eyebrow"><span className="sparkle-dot">✳</span> IMAGE STUDIO</div><h1>Picture the<br/><em>possibilities.</em></h1><p>Describe a scene. We’ll bring it to life.</p></div><div className="image-workspace"><div className="image-input-card"><label htmlFor="image-prompt">What should we create?</label><textarea id="image-prompt" value={imagePrompt} onChange={e=>setImagePrompt(e.target.value)} placeholder="A sun-drenched reading nook, soft linen, a sleepy cat…" rows={3}/><div className="image-input-footer"><span><Sparkles size={14}/> Be descriptive for best results</span><button className="generate-button" disabled={!imagePrompt.trim()||busy} onClick={()=>generateImage()}>{busy?<LoaderCircle size={16} className="spin"/>:<Sparkles size={16}/>} Create image <ArrowUp size={15}/></button></div></div><div className={`image-result ${image?'has-image':''}`}>{image?<><img src={image} alt={imagePrompt}/><button className="download-image" onClick={()=>{const a=document.createElement('a');a.href=image;a.download='callmissed-creation.png';a.click();}}>Download image <ArrowDown size={14}/></button></>:<div className="image-placeholder"><div className="placeholder-icon"><Image size={24}/></div><b>Your next idea, visualized.</b><span>Your creations will show up here.</span></div>}</div><div className="suggestions"><span>NEED A SPARK?</span>{examples.map(x=><button key={x} onClick={()=>setImagePrompt(x)}>{x}<ArrowUp size={12}/></button>)}</div></div><div className="tool-footnote">{imageCount>0?`${imageCount} image${imageCount===1?'':'s'} created this session`:'Images are generated with the CallMissed API.'}</div></section>}
-    {page==='voice'&&<section className="voice-layout"><div className="tool-heading"><div className="eyebrow"><span className="sparkle-dot">✳</span> VOICE AGENT</div><h1>Ideas sound<br/><em>better out loud.</em></h1><p>Have a hands-free conversation with your creative sidekick.</p></div><div className="voice-card"><div className={`voice-orb ${voiceStatus}`}><div className="orb-inner"><AudioLines size={30}/></div><span className="orb-ring ring-one"/><span className="orb-ring ring-two"/></div><div className="voice-state">{voiceStatus==='live'?'You’re connected':voiceStatus==='connecting'?'Connecting to your agent…':'Ready when you are'}</div><div className="voice-substate">{voiceStatus==='live'?'Speak naturally — your agent is listening.':voiceStatus==='connecting'?'Setting up a secure voice session.':'Start a real-time conversation, powered by CallMissed.'}</div><button className={`call-button ${voiceStatus==='live'?'hangup':''}`} onClick={voiceStatus==='live'?stopVoice:startVoice} disabled={voiceStatus==='connecting'}>{voiceStatus==='connecting'?<LoaderCircle size={17} className="spin"/>:voiceStatus==='live'?<><Square size={14} fill="currentColor"/> End conversation</>:<><Mic size={17}/> Start conversation</>}</button><div className="voice-secure"><span className={`status-dot ${voiceStatus==='live'?'on':''}`}/>{voiceStatus==='live'?'Microphone active · WebRTC encrypted':'Microphone access requested when you connect'}</div></div>{transcript.length>0&&<div className="transcript"><div className="transcript-header"><span>LIVE TRANSCRIPT</span><button onClick={()=>setTranscript([])}>Clear</button></div>{transcript.map((m,i)=><div className="transcript-line" key={i}><b>{m.role==='user'?'You':'Agent'}</b><span>{m.content}</span></div>)}</div>}<div className="voice-footnote"><Volume2 size={14}/> Your agent will greet you when the call connects.</div></section>}
-    {notice&&<div className="toast"><span>{notice}</span><button onClick={()=>setNotice('')}><X size={15}/></button></div>}
-    </main>
-    {keyOpen&&<div className="modal-backdrop" onClick={()=>setKeyOpen(false)}><div className="key-modal" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setKeyOpen(false)}><X size={17}/></button><div className="modal-icon"><KeyRound size={20}/></div><div className="eyebrow">SERVER-SIDE API KEY</div><h2>{key?'CallMissed is connected':'One quick setup step'}</h2><p>{key?'Your server is connected to CallMissed. The API key stays on the server and is never sent to your browser.':'To enable chat, images, and voice, set CALLMISSED_API_KEY in your hosting provider’s environment settings, then restart the app.'}</p><div className="setup-code">CALLMISSED_API_KEY=cm_••••••••</div><div className="modal-help">Create a key in the <a href="https://console.callmissed.com" target="_blank" rel="noreferrer">CallMissed console ↗</a> with llm, image, stt, and tts permissions.</div><div className="modal-buttons"><button className="save-button" onClick={()=>setKeyOpen(false)}><Check size={15}/> Got it</button></div></div></div>}
-  </div>
+
+  return (
+    <MotionConfig reducedMotion="user">
+      <div className={`app-shell theme-${theme}`}>
+        {drawerOpen && (
+          <button
+            className="drawer-scrim"
+            aria-label="Close navigation"
+            onClick={() => setDrawerOpen(false)}
+          />
+        )}
+        <aside
+          className={`sidebar ${drawerOpen ? 'drawer-open' : ''}`}
+          aria-label="Main navigation"
+        >
+          <a
+            className="brand"
+            href="#home"
+            onClick={(event) => {
+              event.preventDefault();
+              navigate('chat');
+            }}
+          >
+            <span className="brand-mark">
+              <AudioLines size={20} />
+            </span>
+            <span>
+              callmissed<span className="brand-dot">.</span>
+            </span>
+          </a>
+          <button className="new-chat" onClick={() => navigate('chat')}>
+            <MessageCircle size={16} /> New conversation <span className="shortcut">⌘ K</span>
+          </button>
+          <div className="nav-label">WORKSPACE</div>
+          <nav>
+            {pages.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={`nav-item ${page === id ? 'active' : ''}`}
+                aria-current={page === id ? 'page' : undefined}
+                onClick={() => navigate(id)}
+              >
+                <Icon size={16} />
+                {label}
+                {id === 'voice' && voiceActive && (
+                  <span className="live-dot" aria-label="Voice session active" />
+                )}
+                <ChevronRight className="nav-chevron" size={16} />
+              </button>
+            ))}
+          </nav>
+          <div className="sidebar-bottom">
+            <div className="usage-card">
+              <div className="usage-title">
+                <AudioLines size={16} /> Your creative space
+              </div>
+              <p>Chat, make images, or have a real conversation.</p>
+              <button onClick={openSetup}>
+                <KeyRound size={16} />
+                {configured ? 'API key connected' : 'API key not configured'}
+                <span className={`key-indicator ${configured ? 'connected' : ''}`} />
+              </button>
+            </div>
+            <div className="sidebar-footer">
+              <span className="avatar" aria-hidden="true">
+                R
+              </span>
+              <span className="profile-copy">
+                <b>CallMissed Studio</b>
+                <small>Personal workspace</small>
+              </span>
+              <span className="footer-mark">CM</span>
+            </div>
+          </div>
+        </aside>
+
+        <main className="main">
+          <header className="topbar">
+            <div className="topbar-left">
+              <button
+                className="menu-button icon-button"
+                aria-label="Open navigation"
+                aria-expanded={drawerOpen}
+                onClick={() => setDrawerOpen((value) => !value)}
+              >
+                {drawerOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+              <div className="breadcrumbs">
+                <span>Workspace</span>
+                <span className="slash">/</span>
+                <strong>{pages.find((item) => item.id === page)?.title}</strong>
+              </div>
+            </div>
+            <div className="top-actions">
+              <button
+                className="theme-toggle icon-button"
+                onClick={toggleTheme}
+                aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+                title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+              >
+                {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
+              <button className="api-status" onClick={openSetup}>
+                <span className={`status-dot ${configured ? 'on' : ''}`} />
+                {configured ? 'API connected' : 'API setup'}
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </header>
+          <div className="page-stack">
+            {pages.map(
+              ({ id }) =>
+                visited[id] && (
+                  <section
+                    key={id}
+                    className="route-surface"
+                    hidden={page !== id}
+                    aria-label={pages.find((item) => item.id === id)?.label}
+                  >
+                    <Suspense
+                      fallback={
+                        <div className="page-loading" role="status">
+                          <span className="loading-orb" />
+                          <span>Opening your workspace…</span>
+                        </div>
+                      }
+                    >
+                      {id === 'chat' ? (
+                        <ChatPage />
+                      ) : id === 'images' ? (
+                        <ImagePage />
+                      ) : (
+                        <VoicePage />
+                      )}
+                    </Suspense>
+                  </section>
+                ),
+            )}
+          </div>
+        </main>
+
+        {setupOpen && (
+          <div
+            className="modal-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setSetupOpen(false);
+            }}
+          >
+            <motion.section
+              ref={setupDialogRef}
+              className="key-modal"
+              onKeyDown={trapDialogFocus}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="setup-title"
+              aria-describedby="setup-description"
+              initial={{ opacity: 0, scale: 0.98, y: 6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+            >
+              <button
+                className="modal-close icon-button"
+                onClick={() => setSetupOpen(false)}
+                aria-label="Close setup"
+              >
+                <X size={16} />
+              </button>
+              <div className="modal-icon">
+                <KeyRound size={20} />
+              </div>
+              <div className="eyebrow">SERVER-SIDE API KEY</div>
+              <h2 id="setup-title">
+                {configured ? 'CallMissed is connected' : 'One quick setup step'}
+              </h2>
+              <p id="setup-description">
+                {configured
+                  ? 'The API key is configured on the server and is never sent to your browser.'
+                  : 'Set CALLMISSED_API_KEY in the hosting environment or local .env file, then restart the server.'}
+              </p>
+              <div className="setup-code">CALLMISSED_API_KEY=cm_••••••••</div>
+              <div className="modal-help">
+                Create a key in the{' '}
+                <a href="https://console.callmissed.com" target="_blank" rel="noreferrer">
+                  CallMissed console ↗
+                </a>{' '}
+                with llm, image, stt, and tts permissions.
+              </div>
+              <div className="modal-buttons">
+                <button className="save-button" onClick={() => setSetupOpen(false)}>
+                  <Check size={16} /> Got it
+                </button>
+              </div>
+            </motion.section>
+          </div>
+        )}
+        <Toaster theme={theme} position="bottom-right" richColors closeButton />
+      </div>
+    </MotionConfig>
+  );
 }
-
-

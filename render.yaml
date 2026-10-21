@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: callmissed-studio
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CALLMISSED_API_KEY
+        sync: false
