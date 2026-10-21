@@ -69,6 +69,10 @@ The E2E suite routes every `/api/*` request to local Playwright mocks. To run it
 
 The repository includes `render.yaml` for a Node web service. Create a Render Blueprint from the repository, then set `CALLMISSED_API_KEY` in the service's private environment settings. The config builds the static client and serves it from Express; `/api/status` is the health check. Keep the key out of GitHub Actions, client-side `VITE_*` variables, and committed files.
 
+## Deploy to Vercel
+
+Vercel serves the Vite client from `dist` and runs the API routes in `api/` as serverless functions. Set `CALLMISSED_API_KEY` in the Vercel project's Environment Variables for Production (and Preview if needed), then redeploy. Check `https://your-deployment.vercel.app/api/status`; it should return `{"configured":true}` without exposing the key.
+
 ## Known limits
 
 - Chat and image history live in the current browser session and are not persisted to an account.
